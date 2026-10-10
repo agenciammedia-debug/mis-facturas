@@ -84,6 +84,8 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 .p-Pendiente{background:rgba(255,149,0,.15);color:var(--orange)}
 .p-Revisado{background:rgba(52,199,89,.15);color:var(--green)}
 .p-Observado{background:rgba(255,59,48,.15);color:var(--red)}
+.p-sync{background:var(--fill);color:var(--sec)}
+.p-err{background:rgba(255,59,48,.15);color:var(--red)}
 .lupa{flex:none;width:36px;height:36px;border:0;border-radius:50%;background:var(--fill);color:var(--blue);display:grid;place-items:center;cursor:pointer}
 .empty{padding:50px 0;text-align:center;color:var(--sec)}
 .foot{display:block;text-align:center;margin-top:20px;color:var(--blue);text-decoration:none;font-size:15px}
@@ -116,6 +118,11 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
   <section id="v-home" class="view active">
     <p class="eyebrow" id="hoy"></p>
     <h1>Mis Facturas</h1>
+    <button class="tile" id="draftTile" hidden onclick="seguirBorrador()">
+      <span class="ic" style="background:linear-gradient(135deg,#ff9f0a,#ff6b00)"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span>
+      <span class="tx"><b>Factura sin terminar</b><small>Toca para continuar donde te quedaste</small></span>
+      <span class="chev">›</span>
+    </button>
     <button class="tile" onclick="go('cargar')">
       <span class="ic" style="background:linear-gradient(135deg,#0a84ff,#5e5ce6)"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span>
       <span class="tx"><b>Cargar factura</b><small>Toma una foto y extrae los datos</small></span>
@@ -142,8 +149,12 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
     </div>
     <div id="proc" class="card center" hidden>
       <img id="procImg" class="prev" alt="">
-      <div class="spin"></div>
-      <p class="muted">Leyendo factura…</p>
+      <div id="procWait"><div class="spin"></div><p class="muted">Leyendo factura…</p></div>
+      <div id="procErr" hidden>
+        <p class="muted" id="procMsg"></p>
+        <button class="btn" onclick="procesar()">Reintentar</button>
+        <button class="btn sec" onclick="cancelarFoto()">Cancelar</button>
+      </div>
     </div>
   </section>
 
@@ -185,13 +196,17 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 <div id="toast"></div>
 
 <script>
-const S = { cfg: null, data: [], loaded: false, cur: null, isNew: false, q: '',
+const S = { cfg: null, data: [], loaded: false, fresh: 0, cur: null, isNew: false, busy: false, q: '',
   f: { desde: '', hasta: '', categoria: '', tipo: '', moneda: '', estado: '' } };
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (n, m) => new Intl.NumberFormat('es-PE', { style: 'currency', currency: m || 'PEN' }).format(+n || 0);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const r2 = x => Math.round(x * 100) / 100;
+const money = (n, m) => new Intl.NumberFormat('es-PE', { style: 'currency', currency: m === 'USD' ? 'USD' : 'PEN' }).format(+n || 0);
 const iso = d => d.toLocaleDateString('en-CA');
-const fdate = d => d ? new Date(d + 'T12:00').toLocaleDateString('es-PE', { day: '2-digit', month: 'short' }) : 'Sin fecha';
+const fdate = d => /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(d + 'T12:00').toLocaleDateString('es-PE', { day: '2-digit', month: 'short' }) : 'Sin fecha';
+const nz = s => String(s || '').trim().toUpperCase().replace(/^0+/, '');
+const limpio = r => Object.fromEntries(Object.entries(r).filter(([k]) => k[0] !== '_'));
 const PAL = ['#ff9500','#007aff','#34c759','#af52de','#ff2d55','#5ac8fa','#ffcc00','#5856d6','#ff3b30','#30b0c7','#a2845e','#64d2ff','#8e8e93'];
 const LUPA = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
 const ATTR = { date: 'type="date"', text: 'type="text"',
@@ -201,7 +216,7 @@ const ATTR = { date: 'type="date"', text: 'type="text"',
 const numv = x => parseFloat(String(x ?? '').replace(/\s/g, '').replace(',', '.')) || 0;
 const cache = {
   get: k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 };
 const GROUPS = [
   ['Comprobante', [['fechaEmision','Fecha emisión','date'], ['tipo','Tipo','tipos'], ['serie','Serie','ser'], ['numero','Número','dig']]],
@@ -210,29 +225,38 @@ const GROUPS = [
   ['Control', [['descripcion','Descripción','text'], ['estado','Estado','estados']]]
 ];
 
-/* ---- Backend: API de Apps Script ---- */
+/* ---- API: tiempo límite y reintentos automáticos ---- */
 const API_URL = (window.CONFIG && CONFIG.API_URL || '').trim();
-async function run(action, ...args) {
+class NetErr extends Error {}
+async function api(action, args = [], { timeout = 25000, tries = 3 } = {}) {
   if (!API_URL) throw new Error('Falta API_URL en config.js');
-  let j;
-  try {
-    const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, args }) });
-    j = await res.json();
-  } catch (e) { throw new Error('Sin conexión con el servidor'); }
-  if (!j.ok) throw new Error(j.error);
-  return j.data;
+  for (let i = 1; ; i++) {
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), timeout);
+    try {
+      const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action, args }), signal: ctl.signal });
+      const j = await res.json();
+      if (j.ok) return j.data;
+      if (!j.retry) { const e = new Error(j.error || 'Error del servidor'); e.user = true; throw e; }
+      throw new NetErr(j.error);
+    } catch (e) {
+      if (e.user) throw e;
+      if (i >= tries) throw new NetErr(navigator.onLine === false ? 'Sin conexión a internet' : 'El servidor no respondió');
+      await sleep(700 * i * i);
+    } finally { clearTimeout(t); }
+  }
 }
 
 /* ---- Navegación ---- */
 function go(v) {
   document.querySelectorAll('.view').forEach(e => e.classList.toggle('active', e.id === 'v-' + v));
   window.scrollTo(0, 0);
+  if (v === 'home') verBorrador();
   if (v === 'cargar') resetCap();
   if (v === 'conta') load();
 }
-function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('on'), 3000); }
-const opts = arr => '<option value="">—</option>' + arr.map(o => `<option>${esc(o)}</option>`).join('');
+function toast(m, ms = 3000) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('on'), ms); }
+const opts = arr => '<option value="">—</option>' + (arr || []).map(o => `<option>${esc(o)}</option>`).join('');
 
 /* ---- Imagen: alta resolución + recortes ampliados ---- */
 const loadImg = file => new Promise((res, rej) => {
@@ -257,6 +281,8 @@ function recortes(c, tile = 900, ov = 70) {
   }
   return out;
 }
+const IMG = new Map();
+function cacheImg(id, s) { IMG.set(id, s); if (IMG.size > 15) IMG.delete(IMG.keys().next().value); }
 
 /* ---- QR SUNAT: RUC|tipo|serie|número|IGV|total|fecha|... (datos exactos) ---- */
 const TIPO_QR = { '01': 'Factura', '03': 'Boleta', '07': 'Nota de crédito', '12': 'Ticket' };
@@ -282,28 +308,50 @@ function leerQR(c) {
   return null;
 }
 
-/* ---- Cargar factura ---- */
-function resetCap() { $('#pick').hidden = false; $('#proc').hidden = true; }
+/* ---- Cargar factura (la foto se conserva para reintentar si falla la conexión) ---- */
+let foto = null;
+function procState(s, msg) {
+  $('#pick').hidden = s !== 'pick'; $('#proc').hidden = s === 'pick';
+  $('#procWait').hidden = s !== 'wait'; $('#procErr').hidden = s !== 'err';
+  if (msg) $('#procMsg').textContent = msg;
+}
+function resetCap() { if (!S.busy && !foto) procState('pick'); }
+function cancelarFoto() { foto = null; procState('pick'); }
 async function onFile(inp) {
   const file = inp.files[0]; inp.value = '';
-  if (!file) return;
-  $('#pick').hidden = true; $('#proc').hidden = false;
+  if (!file || S.busy) return;
+  S.busy = true; procState('wait');
   try {
-    if (!S.cfg) await boot();
     const img = await loadImg(file);
     const big = toCanvas(img, 0, 0, img.naturalWidth, img.naturalHeight, 2400);
     const dataUrl = toCanvas(big, 0, 0, big.width, big.height, 2048).toDataURL('image/jpeg', .9);
     $('#procImg').src = dataUrl;
-    await new Promise(r => setTimeout(r, 50));
+    await sleep(50);
     let qr = null; try { qr = leerQR(big); } catch (e) {}
-    const r = await run('procesarFactura', dataUrl.split(',')[1], 'image/jpeg', recortes(big));
-    const d = { ...r.datos, ...(qr || {}) };
+    foto = { dataUrl, partes: recortes(big), qr };
+  } catch (e) {
+    S.busy = false; foto = null; procState('pick'); return toast('No se pudo leer la foto. Intenta con otra.');
+  }
+  S.busy = false;
+  procesar();
+}
+async function procesar() {
+  if (!foto || S.busy) return;
+  S.busy = true; procState('wait');
+  try {
+    if (!S.cfg) await boot();
+    const r = await api('procesarFactura', [foto.dataUrl.split(',')[1], 'image/jpeg', foto.partes], { timeout: 90000, tries: 1 });
+    const qr = foto.qr, d = { ...r.datos, ...(qr || {}) };
     if (qr && qr.total != null && qr.igv != null && Math.abs((+d.subtotal || 0) + qr.igv - qr.total) > .05)
-      d.subtotal = +(qr.total - qr.igv).toFixed(2);
+      d.subtotal = r2(qr.total - qr.igv);
+    cacheImg(r.imagenId, foto.dataUrl);
+    const src = foto.dataUrl; foto = null;
     S.isNew = true;
-    openSheet({ moneda: 'PEN', estado: 'Pendiente', ...d, id: r.id, imagenId: r.imagenId, _qr: !!qr }, dataUrl);
+    openSheet({ moneda: 'PEN', estado: 'Pendiente', ...d, id: r.id, imagenId: r.imagenId, _qr: !!qr }, src);
     if (r.aviso && !qr) toast('No se pudo leer automáticamente. Completa los datos.');
-  } catch (e) { toast('Error: ' + (e.message || e)); resetCap(); }
+  } catch (e) {
+    procState('err', (e.message || 'Error') + '. Tu foto se conserva: pulsa Reintentar.');
+  } finally { S.busy = false; }
 }
 
 /* ---- Validación contable ---- */
@@ -334,7 +382,8 @@ function validar() {
   if (v.tipo === 'Factura' && v.serie && !/^[FE]/i.test(v.serie)) add('La serie de una factura empieza con F o E', 'serie');
   if (v.tipo === 'Boleta' && v.serie && !/^[BE]/i.test(v.serie)) add('La serie de una boleta empieza con B o E', 'serie');
   for (const el of $('#frm').elements) el.closest('.row').classList.toggle('bad', bad.has(el.name));
-  $('#chk').innerHTML = (S.cur._qr ? '<div class="ok">✓ Verificado con el QR SUNAT: RUC, serie, número, fecha, IGV y total</div>' : '')
+  $('#chk').innerHTML = (S.cur._err ? `<div class="warn"><b>No se pudo guardar</b>${esc(S.cur._err)}</div>` : '')
+    + (S.cur._qr ? '<div class="ok">✓ Verificado con el QR SUNAT: RUC, serie, número, fecha, IGV y total</div>' : '')
     + (W.length ? `<div class="warn"><b>Revisa antes de guardar</b>${W.map(w => `<div>• ${esc(w)}</div>`).join('')}</div>`
       : (S.cur._qr ? '' : '<div class="ok">✓ Los importes cuadran</div>'));
   return W;
@@ -355,75 +404,137 @@ function tasaDe(r) {
 }
 // Al editar el Total se recalculan Subtotal e IGV
 function onEdit(e) {
+  if (!S.cur) return;
   const f = $('#frm').elements;
   if (e && e.target.name === 'total') {
-    const t = numv(f.total.value), r = S.cur._tasa ?? .18, sub = +(t / (1 + r)).toFixed(2);
+    const t = numv(f.total.value), r = S.cur._tasa ?? .18, sub = r2(t / (1 + r));
     f.subtotal.value = t ? sub.toFixed(2) : '';
     f.igv.value = t ? (t - sub).toFixed(2) : '';
   }
   if (e && e.target.name === 'tipo') S.cur._tasa = f.tipo.value === 'Recibo por honorarios' ? 0 : (S.cur._tasa || .18);
+  guardarBorrador();
   validar();
 }
 function openSheet(rec, src) {
+  if (!S.cfg) return toast('Cargando configuración, intenta en un momento');
   S.cur = rec;
   rec._tasa = tasaDe(rec);
   for (const el of $('#frm').elements) el.value = rec[el.name] ?? '';
   $('#shTitle').textContent = S.isNew ? 'Revisar datos' : 'Detalle';
   $('#shCancel').textContent = S.isNew ? 'Descartar' : 'Cerrar';
   const img = $('#shImg'); img.removeAttribute('src'); $('.imgbox').classList.remove('zoom');
+  const id = rec.imagenId;
   if (src) img.src = src;
-  else if (rec.imagenId) {
+  else if (id && IMG.has(id)) img.src = IMG.get(id);
+  else if (id) {
     $('#imgSpin').hidden = false;
-    run('obtenerImagen', rec.imagenId).then(s => { if (S.cur === rec) img.src = s; })
-      .catch(() => toast('No se pudo cargar la imagen')).finally(() => $('#imgSpin').hidden = true);
+    api('obtenerImagen', [id], { timeout: 30000, tries: 2 })
+      .then(s => { cacheImg(id, s); if (S.cur === rec) img.src = s; })
+      .catch(() => { if (S.cur === rec) toast('No se pudo cargar la imagen'); })
+      .finally(() => $('#imgSpin').hidden = true);
   }
+  if (S.isNew) guardarBorrador(true);
   validar();
   $('#ov').classList.add('open'); $('#sh').classList.add('open'); $('#sh').scrollTop = 0;
 }
 function closeSheet() { $('#ov').classList.remove('open'); $('#sh').classList.remove('open'); }
 function cancelSheet() {
-  if (S.isNew) {
+  if (S.isNew && S.cur) {
     if (!confirm('¿Descartar esta factura?')) return;
-    run('descartarImagen', S.cur.imagenId).catch(() => {});
-    S.isNew = false; resetCap();
+    api('descartarImagen', [S.cur.imagenId], { tries: 2 }).catch(() => {});
+    S.isNew = false; cache.set('draft', null); verBorrador();
   }
-  closeSheet();
-}
-async function save() {
-  const rec = { ...S.cur };
-  for (const el of $('#frm').elements) rec[el.name] = el.value.trim();
-  ['subtotal', 'igv', 'total'].forEach(k => rec[k] = numv(rec[k]));
-  if (!rec.fechaEmision || !rec.total) return toast('Completa fecha de emisión y total');
-  const W = validar();
-  if (W.length && !confirm('Hay observaciones:\n\n• ' + W.join('\n• ') + '\n\n¿Guardar de todas formas?')) return;
-  const b = $('#saveBtn'); b.disabled = true;
-  try {
-    const saved = await run('guardarFactura', rec, S.isNew);
-    const i = S.data.findIndex(r => r.id === saved.id);
-    i < 0 ? S.data.push(saved) : (S.data[i] = saved);
-    cache.set('data', S.data);
-    closeSheet();
-    toast(S.isNew ? 'Factura guardada ✓' : 'Cambios guardados ✓');
-    if (S.isNew) { S.isNew = false; resetCap(); } else render();
-  } catch (e) { toast(e.message || 'Error al guardar'); }
-  finally { b.disabled = false; }
+  S.cur = null; closeSheet(); resetCap();
 }
 function ver(id) { const r = S.data.find(x => x.id === id); if (r) { S.isNew = false; openSheet(r); } }
+
+/* ---- Borrador: una factura nueva sin guardar nunca se pierde ---- */
+let tDraft;
+function guardarBorrador(ya) {
+  if (!S.isNew || !S.cur) return;
+  clearTimeout(tDraft);
+  const fn = () => {
+    if (!S.isNew || !S.cur) return;
+    const d = limpio(S.cur); for (const el of $('#frm').elements) d[el.name] = el.value;
+    d._qr = S.cur._qr; cache.set('draft', d);
+  };
+  ya ? fn() : (tDraft = setTimeout(fn, 300));
+}
+function verBorrador() { $('#draftTile').hidden = !cache.get('draft'); }
+function seguirBorrador() {
+  const d = cache.get('draft');
+  if (!d) return verBorrador();
+  go('cargar'); S.isNew = true; openSheet(d);
+}
+
+/* ---- Guardar: instantáneo en el teléfono + envío seguro con reintentos ---- */
+const cola = { get: () => cache.get('outbox') || [], set: q => cache.set('outbox', q) };
+const recientes = new Map();
+let enviando = false, tFlush;
+function upsert(r) { const i = S.data.findIndex(x => x.id === r.id); i < 0 ? S.data.push(r) : (S.data[i] = r); }
+function save() {
+  if (!S.cur) return;
+  const rec = { ...S.cur };
+  for (const el of $('#frm').elements) rec[el.name] = el.value.trim();
+  ['subtotal', 'igv', 'total'].forEach(k => rec[k] = r2(numv(rec[k])));
+  if (!rec.fechaEmision || !rec.total) return toast('Completa fecha de emisión y total');
+  if (rec.ruc && rec.numero && S.data.some(r => r.id !== rec.id && nz(r.ruc) === nz(rec.ruc) && nz(r.serie) === nz(rec.serie) && nz(r.numero) === nz(rec.numero)))
+    return toast('Esta factura ya está registrada');
+  const W = validar();
+  if (W.length && !confirm('Hay observaciones:\n\n• ' + W.join('\n• ') + '\n\n¿Guardar de todas formas?')) return;
+  const out = limpio(rec), nueva = S.isNew;
+  upsert({ ...out, _pend: true }); cache.set('data', S.data);
+  cola.set([...cola.get(), { k: Date.now() + '-' + Math.random(), rec: out }]);
+  if (nueva) cache.set('draft', null);
+  S.isNew = false; S.cur = null;
+  closeSheet(); resetCap(); render();
+  toast(navigator.onLine === false ? 'Guardada en el teléfono: se enviará al volver la conexión' : (nueva ? 'Factura guardada ✓' : 'Cambios guardados ✓'));
+  flush();
+}
+async function flush() {
+  if (enviando || !API_URL) return;
+  enviando = true; clearTimeout(tFlush);
+  try {
+    for (let q = cola.get(); q.length; q = cola.get()) {
+      const it = q[0];
+      try {
+        const saved = await api('guardarFactura', [it.rec], { tries: 2 });
+        cola.set(cola.get().filter(x => x.k !== it.k));
+        recientes.set(saved.id, { r: saved, t: Date.now() });
+        if (!cola.get().some(x => x.rec.id === saved.id)) upsert(saved);
+      } catch (e) {
+        if (e instanceof NetErr) break;
+        cola.set(cola.get().filter(x => x.k !== it.k));
+        const r = S.data.find(x => x.id === it.rec.id);
+        if (r) { r._pend = false; r._err = e.message; }
+        toast(`No se guardó «${it.rec.proveedor || 'factura'}»: ${e.message}`, 6000);
+      }
+      cache.set('data', S.data); render();
+    }
+  } finally { enviando = false; }
+  if (cola.get().length) tFlush = setTimeout(flush, 15000);
+}
 
 /* ---- Contabilidad: muestra al instante lo guardado y actualiza en segundo plano ---- */
 let trayendo = null;
 function traer() {
-  return trayendo ||= run('listarFacturas').then(d => {
-    S.data = d; S.loaded = S.fresh = true; cache.set('data', d); render();
+  const t0 = Date.now();
+  return trayendo ||= api('inicio').then(({ cfg, data }) => {
+    aplicarCfg(cfg);
+    recientes.forEach((v, id) => { if (v.t >= t0 - 5000) { const i = data.findIndex(x => x.id === id); i < 0 ? data.push(v.r) : (data[i] = v.r); } });
+    cola.get().forEach(it => { const i = data.findIndex(x => x.id === it.rec.id), r = { ...it.rec, _pend: true }; i < 0 ? data.push(r) : (data[i] = r); });
+    S.data = data; S.loaded = true; S.fresh = Date.now(); cache.set('data', data); render();
   }).finally(() => trayendo = null);
 }
 async function load(force) {
-  if (!S.cfg) { try { await boot(); } catch (e) { $('#list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; } }
-  if (!S.loaded) { const c = cache.get('data'); if (c) { S.data = c; S.loaded = true; } }
-  if (S.loaded) render(); else $('#list').innerHTML = '<div class="spin" style="margin-top:40px"></div>';
-  if (S.fresh && !force) return;
-  try { await traer(); }
-  catch (e) { S.loaded ? toast('Sin conexión: mostrando datos guardados') : $('#list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  if (S.loaded && S.cfg) render(); else $('#list').innerHTML = '<div class="spin" style="margin-top:40px"></div>';
+  flush();
+  if (!force && Date.now() - S.fresh < 60000) return;
+  try { await traer(); if (force) toast('Actualizado ✓'); }
+  catch (e) {
+    if (S.loaded && S.cfg) toast('Sin conexión: mostrando datos guardados');
+    else $('#list').innerHTML = `<div class="empty">${esc(e.message)}<button class="btn sec" onclick="load(true)">Reintentar</button></div>`;
+  }
 }
 function setPer(p) {
   const d = new Date(), y = d.getFullYear(), m = d.getMonth();
@@ -435,62 +546,76 @@ function markPer(p) { document.querySelectorAll('#per button').forEach(b => b.cl
 function syncF() { document.querySelectorAll('[data-f]').forEach(el => el.value = S.f[el.dataset.f]); }
 function clearF() { Object.keys(S.f).forEach(k => S.f[k] = ''); S.q = ''; $('#q').value = ''; markPer('all'); syncF(); render(); }
 function render() {
+  if (!S.cfg) return;
   const f = S.f, q = S.q.trim().toLowerCase();
   const rows = S.data.filter(r =>
     (!f.desde || r.fechaEmision >= f.desde) && (!f.hasta || r.fechaEmision <= f.hasta) &&
     ['categoria', 'tipo', 'moneda', 'estado'].every(k => !f[k] || r[k] === f[k]) &&
     (!q || [r.proveedor, r.ruc, r.serie, r.numero, r.descripcion, r.categoria].join(' ').toLowerCase().includes(q))
-  ).sort((a, b) => (b.fechaEmision || '').localeCompare(a.fechaEmision || ''));
+  ).sort((a, b) => String(b.fechaEmision || '').localeCompare(String(a.fechaEmision || '')));
 
-  const sum = (mon, k, list = rows) => list.filter(r => (r.moneda || 'PEN') === mon).reduce((s, r) => s + (+r[k] || 0), 0);
+  const sum = (mon, k, list = rows) => r2(list.filter(r => (r.moneda || 'PEN') === mon).reduce((s, r) => s + (+r[k] || 0), 0));
   $('#stats').innerHTML = `
     <div class="st"><small>Comprobantes</small><b>${rows.length}</b></div>
-    <div class="st"><small>Total S/</small><b>${money(sum('PEN', 'total'))}</b></div>
-    <div class="st"><small>IGV S/</small><b>${money(sum('PEN', 'igv'))}</b></div>
-    <div class="st"><small>Total US$</small><b>${money(sum('USD', 'total'), 'USD')}</b></div>`;
+    <div class="st"><small>Total soles</small><b>${money(sum('PEN', 'total'))}</b></div>
+    <div class="st"><small>IGV soles</small><b>${money(sum('PEN', 'igv'))}</b></div>
+    <div class="st"><small>Total dólares</small><b>${money(sum('USD', 'total'), 'USD')}</b></div>`;
   $('#fcount').textContent = Object.values(f).filter(Boolean).length || '';
 
   if (!rows.length) { $('#list').innerHTML = `<div class="empty">${S.data.length ? 'Sin resultados para estos filtros' : 'Aún no hay facturas cargadas'}</div>`; return; }
   const byMonth = {};
-  rows.forEach(r => (byMonth[(r.fechaEmision || '').slice(0, 7)] ||= []).push(r));
+  rows.forEach(r => (byMonth[String(r.fechaEmision || '').slice(0, 7)] ||= []).push(r));
   $('#list').innerHTML = Object.entries(byMonth).map(([mk, list]) => {
-    const title = mk ? new Date(mk + '-01T12:00').toLocaleDateString('es-PE', { month: 'long', year: 'numeric' }) : 'Sin fecha';
+    const title = /^\d{4}-\d{2}$/.test(mk) ? new Date(mk + '-01T12:00').toLocaleDateString('es-PE', { month: 'long', year: 'numeric' }) : 'Sin fecha';
     return `<p class="gh"><span>${title}</span><span>${money(sum('PEN', 'total', list))}</span></p><div class="group">${list.map(item).join('')}</div>`;
   }).join('');
 }
 function item(r) {
   const i = S.cfg.categorias.indexOf(r.categoria), col = i < 0 ? '#8e8e93' : PAL[i % PAL.length];
   const doc = [r.serie, r.numero].filter(Boolean).join('-');
+  const pill = r._err ? '<span class="pill p-err">No guardado</span>'
+    : r._pend ? '<span class="pill p-sync">Enviando…</span>'
+    : `<span class="pill p-${esc(r.estado)}">${esc(r.estado)}</span>`;
   return `<div class="item" onclick="ver('${esc(r.id)}')">
     <div class="av" style="background:${col}">${esc((r.categoria || '?')[0])}</div>
     <div class="mid"><div class="t">${esc(r.proveedor || 'Sin proveedor')}</div>
       <div class="s">${fdate(r.fechaEmision)} · ${esc(r.categoria || 'Sin categoría')}${doc ? ' · ' + esc(doc) : ''}</div></div>
-    <div class="end"><div class="amt">${money(r.total, r.moneda)}</div><span class="pill p-${esc(r.estado)}">${esc(r.estado)}</span></div>
+    <div class="end"><div class="amt">${money(r.total, r.moneda)}</div>${pill}</div>
     <button class="lupa" aria-label="Ver">${LUPA}</button></div>`;
 }
 
 /* ---- Configuración (guardada en el teléfono para abrir al instante) ---- */
 function aplicarCfg(c) {
-  if (!c || JSON.stringify(c) === JSON.stringify(S.cfg)) return;
+  if (!c || !Array.isArray(c.categorias) || JSON.stringify(c) === JSON.stringify(S.cfg)) return;
   S.cfg = c; cache.set('cfg', c);
   document.querySelectorAll('[data-o]').forEach(el => { const v = el.value; el.innerHTML = opts(c[el.dataset.o]); el.value = v; });
   if (!$('#sh').classList.contains('open')) buildForm();
   if (c.url) { $('#sheetLink').href = c.url; $('#sheetLink').hidden = false; }
-  if (S.loaded) render();
+  render();
 }
-async function boot() { aplicarCfg(await run('getConfig')); }
+async function boot() { aplicarCfg(await api('getConfig')); }
 
 /* ---- Inicio ---- */
 (function init() {
+  addEventListener('error', e => { console.error(e.error || e.message); toast('Algo falló. Vuelve a intentarlo.'); });
+  addEventListener('unhandledrejection', e => console.error(e.reason));
   $('#hoy').textContent = new Date().toLocaleDateString('es-PE', { weekday: 'long', day: 'numeric', month: 'long' });
   document.querySelectorAll('#per button').forEach(b => b.onclick = () => setPer(b.dataset.p));
   document.querySelectorAll('[data-f]').forEach(el => el.onchange = () => {
     S.f[el.dataset.f] = el.value; if (el.type === 'date') markPer(''); render();
   });
-  $('#q').oninput = e => { S.q = e.target.value; render(); };
+  let tq; $('#q').oninput = e => { clearTimeout(tq); tq = setTimeout(() => { S.q = e.target.value; render(); }, 120); };
+  const d = cache.get('data'); if (Array.isArray(d)) { S.data = d; S.loaded = true; }
   aplicarCfg(cache.get('cfg'));
-  // Precarga en segundo plano: configuración y facturas
-  boot().then(() => traer()).catch(e => { if (!S.cfg) toast(e.message); });
+  verBorrador();
+  // Sincroniza en segundo plano: configuración + facturas en una sola llamada, y envía lo pendiente
+  traer().catch(e => { if (!S.cfg) toast(e.message); });
+  flush();
+  addEventListener('online', flush);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    flush(); if (Date.now() - S.fresh > 60000) traer().catch(() => {});
+  });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // Ícono para iPhone (iOS no acepta SVG): se genera después de mostrar la app
   setTimeout(() => {
