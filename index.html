@@ -259,6 +259,7 @@ async function onFile(inp) {
   if (!file) return;
   $('#pick').hidden = true; $('#proc').hidden = false;
   try {
+    if (!S.cfg) await boot(true);
     const dataUrl = await compress(file);
     $('#procImg').src = dataUrl;
     const r = await run('procesarFactura', dataUrl.split(',')[1], 'image/jpeg');
@@ -316,6 +317,7 @@ function ver(id) { const r = S.data.find(x => x.id === id); if (r) { S.isNew = f
 
 /* ---- Contabilidad ---- */
 async function load(force) {
+  if (!S.cfg) { try { await boot(true); } catch (e) { $('#list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; } }
   if (S.loaded && !force) return render();
   $('#list').innerHTML = '<div class="spin" style="margin-top:40px"></div>';
   try { S.data = await run('listarFacturas'); S.loaded = true; render(); }
@@ -366,12 +368,12 @@ function item(r) {
 }
 
 /* ---- Acceso ---- */
-async function boot() {
+async function boot(stay) {
   S.cfg = await run('getConfig');
   document.querySelectorAll('[data-o]').forEach(el => el.innerHTML = opts(S.cfg[el.dataset.o]));
   buildForm();
   if (S.cfg.url) { $('#sheetLink').href = S.cfg.url; $('#sheetLink').hidden = false; }
-  go('home');
+  if (!stay) go('home');
 }
 async function login() {
   const v = $('#tk').value.trim();
