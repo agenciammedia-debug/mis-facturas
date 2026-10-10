@@ -13,7 +13,7 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="manifest" href="manifest.webmanifest">
 <script src="config.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <style>
 :root{--bg:#f2f2f7;--card:#fff;--tx:#000;--sec:#6e6e73;--sep:rgba(60,60,67,.18);--fill:rgba(118,118,128,.12);--blue:#007aff;--green:#34c759;--orange:#ff9500;--red:#ff3b30;--bar:rgba(242,242,247,.82)}
 @media (prefers-color-scheme:dark){:root{--bg:#000;--card:#1c1c1e;--tx:#fff;--sec:#98989f;--sep:rgba(84,84,88,.65);--fill:rgba(118,118,128,.24);--blue:#0a84ff;--green:#30d158;--orange:#ff9f0a;--red:#ff453a;--bar:rgba(0,0,0,.78)}}
@@ -24,10 +24,6 @@ body{font:17px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Ne
 button,input,select,textarea{font:inherit;color:inherit}
 svg{display:block}
 #app{max-width:680px;margin:0 auto;padding:calc(12px + env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom))}
-.login{text-align:center;padding-top:12vh}
-.appicon{width:96px;height:96px;border-radius:22px;box-shadow:0 8px 24px rgba(0,0,0,.15)}
-.login .group input{text-align:left;color:var(--tx)}
-.out{display:block;margin:28px auto 0;background:none;border:0;color:var(--sec);font-size:15px;cursor:pointer}
 .view{display:none}.view.active{display:block;animation:in .35s cubic-bezier(.2,.8,.2,1)}
 @keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .eyebrow{margin:20px 0 0;color:var(--sec);font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
@@ -116,19 +112,8 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 <body>
 <div id="app">
 
-  <!-- ACCESO -->
-  <section id="v-login" class="view">
-    <div class="login">
-      <img src="icon.svg" class="appicon" alt="">
-      <h1>Mis Facturas</h1>
-      <p class="muted">Ingresa tu código de acceso</p>
-      <div class="group"><label class="row"><input id="tk" type="password" placeholder="Código" autocomplete="current-password" autocapitalize="characters" onkeydown="if(event.key==='Enter')login()"></label></div>
-      <button class="btn" id="tkBtn" onclick="login()">Entrar</button>
-    </div>
-  </section>
-
   <!-- INICIO -->
-  <section id="v-home" class="view">
+  <section id="v-home" class="view active">
     <p class="eyebrow" id="hoy"></p>
     <h1>Mis Facturas</h1>
     <button class="tile" onclick="go('cargar')">
@@ -194,7 +179,7 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
   <nav class="bar"><button class="link" id="shCancel" onclick="cancelSheet()">Cerrar</button><b id="shTitle">Detalle</b><button class="link r strong" onclick="save()">Guardar</button></nav>
   <div class="imgbox" onclick="this.classList.toggle('zoom')"><img id="shImg" alt="Factura"><div class="spin" id="imgSpin" hidden></div></div>
   <div id="chk"></div>
-  <form id="frm" onsubmit="return false" oninput="validar()" onchange="validar()"></form>
+  <form id="frm" onsubmit="return false" oninput="onEdit(event)" onchange="validar()"></form>
   <button class="btn" id="saveBtn" onclick="save()">Guardar</button>
 </div>
 <div id="toast"></div>
@@ -209,31 +194,33 @@ const iso = d => d.toLocaleDateString('en-CA');
 const fdate = d => d ? new Date(d + 'T12:00').toLocaleDateString('es-PE', { day: '2-digit', month: 'short' }) : 'Sin fecha';
 const PAL = ['#ff9500','#007aff','#34c759','#af52de','#ff2d55','#5ac8fa','#ffcc00','#5856d6','#ff3b30','#30b0c7','#a2845e','#64d2ff','#8e8e93'];
 const LUPA = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+const ATTR = { date: 'type="date"', text: 'type="text"',
+  ser: 'type="text" autocapitalize="characters" autocomplete="off"',
+  dig: 'type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off"',
+  num: 'type="text" inputmode="decimal" placeholder="0.00" autocomplete="off"' };
+const numv = x => parseFloat(String(x ?? '').replace(/\s/g, '').replace(',', '.')) || 0;
+const cache = {
+  get: k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
 const GROUPS = [
-  ['Comprobante', [['fechaEmision','Fecha emisión','date'], ['tipo','Tipo','tipos'], ['serie','Serie','text'], ['numero','Número','text']]],
-  ['Emisor', [['ruc','RUC','text'], ['proveedor','Proveedor','text'], ['categoria','Categoría','categorias']]],
-  ['Importes', [['moneda','Moneda','monedas'], ['subtotal','Subtotal','num'], ['igv','IGV','num'], ['total','Total','num']]],
+  ['Comprobante', [['fechaEmision','Fecha emisión','date'], ['tipo','Tipo','tipos'], ['serie','Serie','ser'], ['numero','Número','dig']]],
+  ['Emisor', [['ruc','RUC','dig'], ['proveedor','Proveedor','text'], ['categoria','Categoría','categorias']]],
+  ['Importes', [['moneda','Moneda','monedas'], ['total','Total','num'], ['subtotal','Subtotal','num'], ['igv','IGV','num']]],
   ['Control', [['descripcion','Descripción','text'], ['estado','Estado','estados']]]
 ];
 
-/* ---- Backend: API de Apps Script (o modo demo si config.js no tiene API_URL) ---- */
+/* ---- Backend: API de Apps Script ---- */
 const API_URL = (window.CONFIG && CONFIG.API_URL || '').trim();
-const store = {
-  get: k => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
-  set: (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} }
-};
 async function run(action, ...args) {
-  if (!API_URL) return new Promise(r => setTimeout(() => r(DEMO[action](...args)), action === 'procesarFactura' ? 1400 : 250));
+  if (!API_URL) throw new Error('Falta API_URL en config.js');
   let j;
   try {
     const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ token: store.get('tk'), action, args }) });
+      body: JSON.stringify({ action, args }) });
     j = await res.json();
   } catch (e) { throw new Error('Sin conexión con el servidor'); }
-  if (!j.ok) {
-    if (j.error === 'AUTH' && action !== 'getConfig') { logout(); throw new Error('Sesión vencida: ingresa tu código'); }
-    throw new Error(j.error);
-  }
+  if (!j.ok) throw new Error(j.error);
   return j.data;
 }
 
@@ -302,7 +289,7 @@ async function onFile(inp) {
   if (!file) return;
   $('#pick').hidden = true; $('#proc').hidden = false;
   try {
-    if (!S.cfg) await boot(true);
+    if (!S.cfg) await boot();
     const img = await loadImg(file);
     const big = toCanvas(img, 0, 0, img.naturalWidth, img.naturalHeight, 2400);
     const dataUrl = toCanvas(big, 0, 0, big.width, big.height, 2048).toDataURL('image/jpeg', .9);
@@ -328,7 +315,7 @@ function rucOk(r) {
 function validar() {
   if (!S.cur) return [];
   const v = {}; for (const el of $('#frm').elements) v[el.name] = el.value.trim();
-  const n = k => +v[k] || 0, W = [], bad = new Set();
+  const n = k => numv(v[k]), W = [], bad = new Set();
   const add = (msg, ...ks) => { W.push(msg); ks.forEach(k => bad.add(k)); };
   const falta = ['fechaEmision', 'ruc', 'proveedor', 'numero', 'total'].filter(k => k === 'total' ? !n(k) : !v[k]);
   if (falta.length) add('Faltan datos obligatorios', ...falta);
@@ -357,10 +344,29 @@ function validar() {
 function buildForm() {
   $('#frm').innerHTML = GROUPS.map(([g, fs]) => `<p class="gh">${g}</p><div class="group">${fs.map(([k, l, t]) =>
     `<label class="row"><span>${l}</span>${S.cfg[t] ? `<select name="${k}">${opts(S.cfg[t])}</select>`
-      : `<input name="${k}" type="${t === 'num' ? 'number' : t}"${t === 'num' ? ' step="0.01" inputmode="decimal" placeholder="0.00"' : ''}>`}</label>`).join('')}</div>`).join('');
+      : `<input name="${k}" ${ATTR[t]}>`}</label>`).join('')}</div>`).join('');
+}
+// Tasa de IGV de la factura (18% por defecto; 0 si es exonerada o recibo por honorarios)
+function tasaDe(r) {
+  const s = numv(r.subtotal), i = numv(r.igv);
+  if (r.tipo === 'Recibo por honorarios' || (s && !i)) return 0;
+  if (s && i) { const k = [.18, .10, .14].find(x => Math.abs(i / s - x) < .006); if (k != null) return k; }
+  return .18;
+}
+// Al editar el Total se recalculan Subtotal e IGV
+function onEdit(e) {
+  const f = $('#frm').elements;
+  if (e && e.target.name === 'total') {
+    const t = numv(f.total.value), r = S.cur._tasa ?? .18, sub = +(t / (1 + r)).toFixed(2);
+    f.subtotal.value = t ? sub.toFixed(2) : '';
+    f.igv.value = t ? (t - sub).toFixed(2) : '';
+  }
+  if (e && e.target.name === 'tipo') S.cur._tasa = f.tipo.value === 'Recibo por honorarios' ? 0 : (S.cur._tasa || .18);
+  validar();
 }
 function openSheet(rec, src) {
   S.cur = rec;
+  rec._tasa = tasaDe(rec);
   for (const el of $('#frm').elements) el.value = rec[el.name] ?? '';
   $('#shTitle').textContent = S.isNew ? 'Revisar datos' : 'Detalle';
   $('#shCancel').textContent = S.isNew ? 'Descartar' : 'Cerrar';
@@ -385,8 +391,9 @@ function cancelSheet() {
 }
 async function save() {
   const rec = { ...S.cur };
-  for (const el of $('#frm').elements) rec[el.name] = el.value;
-  if (!rec.fechaEmision || !(+rec.total)) return toast('Completa fecha de emisión y total');
+  for (const el of $('#frm').elements) rec[el.name] = el.value.trim();
+  ['subtotal', 'igv', 'total'].forEach(k => rec[k] = numv(rec[k]));
+  if (!rec.fechaEmision || !rec.total) return toast('Completa fecha de emisión y total');
   const W = validar();
   if (W.length && !confirm('Hay observaciones:\n\n• ' + W.join('\n• ') + '\n\n¿Guardar de todas formas?')) return;
   const b = $('#saveBtn'); b.disabled = true;
@@ -394,6 +401,7 @@ async function save() {
     const saved = await run('guardarFactura', rec, S.isNew);
     const i = S.data.findIndex(r => r.id === saved.id);
     i < 0 ? S.data.push(saved) : (S.data[i] = saved);
+    cache.set('data', S.data);
     closeSheet();
     toast(S.isNew ? 'Factura guardada ✓' : 'Cambios guardados ✓');
     if (S.isNew) { S.isNew = false; resetCap(); } else render();
@@ -402,13 +410,20 @@ async function save() {
 }
 function ver(id) { const r = S.data.find(x => x.id === id); if (r) { S.isNew = false; openSheet(r); } }
 
-/* ---- Contabilidad ---- */
+/* ---- Contabilidad: muestra al instante lo guardado y actualiza en segundo plano ---- */
+let trayendo = null;
+function traer() {
+  return trayendo ||= run('listarFacturas').then(d => {
+    S.data = d; S.loaded = S.fresh = true; cache.set('data', d); render();
+  }).finally(() => trayendo = null);
+}
 async function load(force) {
-  if (!S.cfg) { try { await boot(true); } catch (e) { $('#list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; } }
-  if (S.loaded && !force) return render();
-  $('#list').innerHTML = '<div class="spin" style="margin-top:40px"></div>';
-  try { S.data = await run('listarFacturas'); S.loaded = true; render(); }
-  catch (e) { $('#list').innerHTML = `<div class="empty">${esc(e.message || 'Error al cargar')}</div>`; }
+  if (!S.cfg) { try { await boot(); } catch (e) { $('#list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; } }
+  if (!S.loaded) { const c = cache.get('data'); if (c) { S.data = c; S.loaded = true; } }
+  if (S.loaded) render(); else $('#list').innerHTML = '<div class="spin" style="margin-top:40px"></div>';
+  if (S.fresh && !force) return;
+  try { await traer(); }
+  catch (e) { S.loaded ? toast('Sin conexión: mostrando datos guardados') : $('#list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 function setPer(p) {
   const d = new Date(), y = d.getFullYear(), m = d.getMonth();
@@ -454,62 +469,38 @@ function item(r) {
     <button class="lupa" aria-label="Ver">${LUPA}</button></div>`;
 }
 
-/* ---- Acceso ---- */
-async function boot(stay) {
-  S.cfg = await run('getConfig');
-  document.querySelectorAll('[data-o]').forEach(el => el.innerHTML = opts(S.cfg[el.dataset.o]));
-  buildForm();
-  if (S.cfg.url) { $('#sheetLink').href = S.cfg.url; $('#sheetLink').hidden = false; }
-  if (!stay) go('home');
+/* ---- Configuración (guardada en el teléfono para abrir al instante) ---- */
+function aplicarCfg(c) {
+  if (!c || JSON.stringify(c) === JSON.stringify(S.cfg)) return;
+  S.cfg = c; cache.set('cfg', c);
+  document.querySelectorAll('[data-o]').forEach(el => { const v = el.value; el.innerHTML = opts(c[el.dataset.o]); el.value = v; });
+  if (!$('#sh').classList.contains('open')) buildForm();
+  if (c.url) { $('#sheetLink').href = c.url; $('#sheetLink').hidden = false; }
+  if (S.loaded) render();
 }
-async function login() {
-  const v = $('#tk').value.trim();
-  if (!v) return;
-  store.set('tk', v);
-  const b = $('#tkBtn'); b.disabled = true;
-  try { await boot(); $('#tk').value = ''; }
-  catch (e) { store.set('tk', ''); toast(e.message === 'AUTH' ? 'Código incorrecto' : e.message); }
-  finally { b.disabled = false; }
-}
-function logout() {
-  store.set('tk', ''); S.data = []; S.loaded = false; closeSheet(); go('login');
-}
+async function boot() { aplicarCfg(await run('getConfig')); }
 
-/* ---- Datos de demostración (solo si config.js no tiene API_URL) ---- */
-const DEMO = {
-  getConfig: () => ({ tipos: ['Factura','Boleta','Recibo por honorarios','Ticket','Nota de crédito','Otro'],
-    categorias: ['Alimentación','Combustible','Transporte','Servicios básicos','Alquiler','Oficina y suministros','Tecnología','Telefonía e internet','Salud','Marketing','Honorarios','Mantenimiento','Otros'],
-    monedas: ['PEN','USD'], estados: ['Pendiente','Revisado','Observado'], url: '' }),
-  listarFacturas: () => [
-    { id:'A1', fechaEmision:'2026-10-08', tipo:'Factura', serie:'F001', numero:'004512', ruc:'20100070970', proveedor:'Supermercados Peruanos S.A.', moneda:'PEN', subtotal:211.86, igv:38.14, total:250, categoria:'Alimentación', descripcion:'Víveres oficina', estado:'Pendiente', imagenId:'x' },
-    { id:'A2', fechaEmision:'2026-10-05', tipo:'Factura', serie:'F102', numero:'000881', ruc:'20330262428', proveedor:'Repsol Comercial S.A.C.', moneda:'PEN', subtotal:152.54, igv:27.46, total:180, categoria:'Combustible', descripcion:'Gasolina 95', estado:'Revisado', imagenId:'x' },
-    { id:'A3', fechaEmision:'2026-10-02', tipo:'Factura', serie:'E001', numero:'1203', ruc:'20601234567', proveedor:'Amazon Web Services', moneda:'USD', subtotal:42.37, igv:7.63, total:50, categoria:'Tecnología', descripcion:'Hosting', estado:'Pendiente', imagenId:'x' },
-    { id:'A4', fechaEmision:'2026-09-28', tipo:'Factura', serie:'F003', numero:'778812', ruc:'20467534026', proveedor:'Claro Perú', moneda:'PEN', subtotal:101.69, igv:18.31, total:120, categoria:'Telefonía e internet', descripcion:'Plan móvil', estado:'Observado', imagenId:'x' },
-    { id:'A5', fechaEmision:'2026-09-15', tipo:'Recibo por honorarios', serie:'E001', numero:'45', ruc:'10456789123', proveedor:'Ana Torres (diseño)', moneda:'PEN', subtotal:800, igv:0, total:800, categoria:'Honorarios', descripcion:'Diseño de logo', estado:'Revisado', imagenId:'x' }
-  ],
-  procesarFactura: () => ({ id: 'D' + Date.now() % 1e5, imagenId: 'x', aviso: '', datos: { fechaEmision: iso(new Date()), tipo: 'Factura', serie: 'F001', numero: '000123', ruc: '20100070970', proveedor: 'Supermercados Peruanos S.A.', moneda: 'PEN', subtotal: 84.75, igv: 15.25, total: 100, categoria: 'Alimentación', descripcion: 'Compra de víveres' } }),
-  guardarFactura: f => ({ ...f }),
-  obtenerImagen: () => 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="420"><rect width="300" height="420" fill="#fff"/><text x="150" y="60" font-family="Arial" font-size="22" text-anchor="middle">FACTURA</text><g fill="#ddd"><rect x="30" y="100" width="240" height="12"/><rect x="30" y="130" width="180" height="12"/><rect x="30" y="160" width="210" height="12"/><rect x="30" y="300" width="240" height="40"/></g></svg>'),
-  descartarImagen: () => true
-};
-
-/* ---- Init ---- */
-(async function init() {
+/* ---- Inicio ---- */
+(function init() {
   $('#hoy').textContent = new Date().toLocaleDateString('es-PE', { weekday: 'long', day: 'numeric', month: 'long' });
   document.querySelectorAll('#per button').forEach(b => b.onclick = () => setPer(b.dataset.p));
   document.querySelectorAll('[data-f]').forEach(el => el.onchange = () => {
     S.f[el.dataset.f] = el.value; if (el.type === 'date') markPer(''); render();
   });
   $('#q').oninput = e => { S.q = e.target.value; render(); };
-  // Ícono para iPhone: convierte icon.svg a PNG (iOS no acepta SVG como ícono)
-  const ic = new Image();
-  ic.onload = () => { const c = document.createElement('canvas'); c.width = c.height = 180;
-    c.getContext('2d').drawImage(ic, 0, 0, 180, 180);
-    const l = document.createElement('link'); l.rel = 'apple-touch-icon'; l.href = c.toDataURL('image/png'); document.head.appendChild(l); };
-  ic.src = 'icon.svg';
+  aplicarCfg(cache.get('cfg'));
+  // Precarga en segundo plano: configuración y facturas
+  boot().then(() => traer()).catch(e => { if (!S.cfg) toast(e.message); });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  try { await boot(); }
-  catch (e) { go('home'); toast(e.message); }})();
+  // Ícono para iPhone (iOS no acepta SVG): se genera después de mostrar la app
+  setTimeout(() => {
+    const ic = new Image();
+    ic.onload = () => { try { const c = document.createElement('canvas'); c.width = c.height = 180;
+      c.getContext('2d').drawImage(ic, 0, 0, 180, 180);
+      const l = document.createElement('link'); l.rel = 'apple-touch-icon'; l.href = c.toDataURL('image/png'); document.head.appendChild(l); } catch (e) {} };
+    ic.src = 'icon.svg';
+  }, 1500);
+})();
 </script>
 </body>
 </html>
