@@ -134,7 +134,6 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
       <span class="tx"><b>Contabilidad</b><small>Resumen, filtros y detalle</small></span>
       <span class="chev">›</span>
     </button>
-    <button class="out" id="outBtn" onclick="logout()">Cerrar sesión</button>
   </section>
 
   <!-- CARGAR -->
@@ -413,7 +412,6 @@ const DEMO = {
     S.f[el.dataset.f] = el.value; if (el.type === 'date') markPer(''); render();
   });
   $('#q').oninput = e => { S.q = e.target.value; render(); };
-  $('#outBtn').hidden = !API_URL;
   // Ícono para iPhone: convierte icon.svg a PNG (iOS no acepta SVG como ícono)
   const ic = new Image();
   ic.onload = () => { const c = document.createElement('canvas'); c.width = c.height = 180;
@@ -421,10 +419,8 @@ const DEMO = {
     const l = document.createElement('link'); l.rel = 'apple-touch-icon'; l.href = c.toDataURL('image/png'); document.head.appendChild(l); };
   ic.src = 'icon.svg';
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  if (API_URL && !store.get('tk')) return go('login');
   try { await boot(); }
-  catch (e) { go('login'); toast(e.message === 'AUTH' ? 'Ingresa tu código de acceso' : e.message); }
-})();
+  catch (e) { go('home'); toast(e.message); }})();
 </script>
 </body>
 </html>
