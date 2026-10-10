@@ -13,6 +13,7 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="manifest" href="manifest.webmanifest">
 <script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <style>
 :root{--bg:#f2f2f7;--card:#fff;--tx:#000;--sec:#6e6e73;--sep:rgba(60,60,67,.18);--fill:rgba(118,118,128,.12);--blue:#007aff;--green:#34c759;--orange:#ff9500;--red:#ff3b30;--bar:rgba(242,242,247,.82)}
 @media (prefers-color-scheme:dark){:root{--bg:#000;--card:#1c1c1e;--tx:#fff;--sec:#98989f;--sep:rgba(84,84,88,.65);--fill:rgba(118,118,128,.24);--blue:#0a84ff;--green:#30d158;--orange:#ff9f0a;--red:#ff453a;--bar:rgba(0,0,0,.78)}}
@@ -104,6 +105,12 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 .imgbox .spin{position:absolute}
 #toast{position:fixed;left:50%;bottom:calc(30px + env(safe-area-inset-bottom));z-index:40;transform:translate(-50%,20px);max-width:90vw;padding:12px 18px;border-radius:14px;background:rgba(30,30,30,.92);color:#fff;font-size:15px;text-align:center;opacity:0;pointer-events:none;transition:.3s}
 #toast.on{opacity:1;transform:translate(-50%,0)}
+.ok,.warn{border-radius:12px;padding:10px 14px;margin-bottom:10px;font-size:14px;line-height:1.4}
+.ok{background:rgba(52,199,89,.14);color:#248a3d;font-weight:600}
+.warn{background:rgba(255,149,0,.14)}
+.warn b{display:block;color:#c46a00;margin-bottom:4px}
+.row.bad>span{color:#c46a00;font-weight:600}
+@media (prefers-color-scheme:dark){.ok{color:#30d158}.warn b,.row.bad>span{color:#ff9f0a}}
 </style>
 </head>
 <body>
@@ -142,7 +149,7 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
     <div id="pick" class="card center">
       <div class="hero"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></div>
       <h2>Fotografía tu comprobante</h2>
-      <p class="muted">Buena luz, sin sombras y con todo el documento visible.</p>
+      <p class="muted">Buena luz, sin sombras, documento completo y el código QR visible.</p>
       <label class="btn" for="cam">Tomar foto</label>
       <label class="btn sec" for="gal">Elegir de galería</label>
       <input class="vh" type="file" id="cam" accept="image/*" capture="environment" onchange="onFile(this)">
@@ -186,7 +193,8 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
   <div class="grab"></div>
   <nav class="bar"><button class="link" id="shCancel" onclick="cancelSheet()">Cerrar</button><b id="shTitle">Detalle</b><button class="link r strong" onclick="save()">Guardar</button></nav>
   <div class="imgbox" onclick="this.classList.toggle('zoom')"><img id="shImg" alt="Factura"><div class="spin" id="imgSpin" hidden></div></div>
-  <form id="frm" onsubmit="return false"></form>
+  <div id="chk"></div>
+  <form id="frm" onsubmit="return false" oninput="validar()" onchange="validar()"></form>
   <button class="btn" id="saveBtn" onclick="save()">Guardar</button>
 </div>
 <div id="toast"></div>
@@ -239,34 +247,110 @@ function go(v) {
 function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('on'), 3000); }
 const opts = arr => '<option value="">—</option>' + arr.map(o => `<option>${esc(o)}</option>`).join('');
 
+/* ---- Imagen: alta resolución + recortes ampliados ---- */
+const loadImg = file => new Promise((res, rej) => {
+  const img = new Image(), url = URL.createObjectURL(file);
+  img.onload = () => { URL.revokeObjectURL(url); res(img); };
+  img.onerror = rej; img.src = url;
+});
+function toCanvas(src, sx, sy, sw, sh, max) {
+  const s = Math.min(1, max / Math.max(sw, sh)), c = document.createElement('canvas');
+  c.width = Math.round(sw * s); c.height = Math.round(sh * s);
+  c.getContext('2d').drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+const b64 = c => c.toDataURL('image/jpeg', .9).split(',')[1];
+function recortes(c, tile = 900, ov = 70) {
+  const W = c.width, H = c.height, out = [];
+  if (Math.max(W, H) <= 1400) return out;
+  const cols = Math.ceil(W / tile), rows = Math.ceil(H / tile), tw = W / cols, th = H / rows;
+  for (let r = 0; r < rows; r++) for (let k = 0; k < cols; k++) {
+    const x = Math.max(0, k * tw - ov), y = Math.max(0, r * th - ov);
+    out.push(b64(toCanvas(c, x, y, Math.min(W - x, tw + 2 * ov), Math.min(H - y, th + 2 * ov), 1200)));
+  }
+  return out;
+}
+
+/* ---- QR SUNAT: RUC|tipo|serie|número|IGV|total|fecha|... (datos exactos) ---- */
+const TIPO_QR = { '01': 'Factura', '03': 'Boleta', '07': 'Nota de crédito', '12': 'Ticket' };
+function parseQR(t) {
+  const p = String(t).split('|').map(x => x.trim());
+  if (p.length < 7 || !/^\d{11}$/.test(p[0]) || !/^\d{2}$/.test(p[1])) return null;
+  const num = v => { v = String(v || ''); const x = parseFloat(v.includes('.') ? v.replace(/,/g, '') : v.replace(',', '.')); return isNaN(x) ? undefined : x; };
+  let f = p[6]; const m = f.match(/^(\d{2})[\/-](\d{2})[\/-](\d{4})$/); if (m) f = `${m[3]}-${m[2]}-${m[1]}`;
+  const o = { ruc: p[0], tipo: TIPO_QR[p[1]], serie: p[2].toUpperCase(), numero: p[3], igv: num(p[4]), total: num(p[5]),
+    fechaEmision: /^\d{4}-\d{2}-\d{2}$/.test(f) ? f : undefined };
+  Object.keys(o).forEach(k => (o[k] === undefined || o[k] === '') && delete o[k]);
+  return o;
+}
+function leerQR(c) {
+  if (!window.jsQR) return null;
+  for (const max of [1400, 2400]) {
+    const k = max >= Math.max(c.width, c.height) ? c : toCanvas(c, 0, 0, c.width, c.height, max);
+    const q = jsQR(k.getContext('2d').getImageData(0, 0, k.width, k.height).data, k.width, k.height, { inversionAttempts: 'attemptBoth' });
+    const p = q && parseQR(q.data);
+    if (p) return p;
+    if (k === c) break;
+  }
+  return null;
+}
+
 /* ---- Cargar factura ---- */
 function resetCap() { $('#pick').hidden = false; $('#proc').hidden = true; }
-function compress(file, max = 1800) {
-  return new Promise((res, rej) => {
-    const img = new Image(), url = URL.createObjectURL(file);
-    img.onload = () => {
-      const s = Math.min(1, max / Math.max(img.width, img.height));
-      const c = document.createElement('canvas');
-      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', .82));
-    };
-    img.onerror = rej; img.src = url;
-  });
-}
 async function onFile(inp) {
   const file = inp.files[0]; inp.value = '';
   if (!file) return;
   $('#pick').hidden = true; $('#proc').hidden = false;
   try {
     if (!S.cfg) await boot(true);
-    const dataUrl = await compress(file);
+    const img = await loadImg(file);
+    const big = toCanvas(img, 0, 0, img.naturalWidth, img.naturalHeight, 2400);
+    const dataUrl = toCanvas(big, 0, 0, big.width, big.height, 2048).toDataURL('image/jpeg', .9);
     $('#procImg').src = dataUrl;
-    const r = await run('procesarFactura', dataUrl.split(',')[1], 'image/jpeg');
+    await new Promise(r => setTimeout(r, 50));
+    let qr = null; try { qr = leerQR(big); } catch (e) {}
+    const r = await run('procesarFactura', dataUrl.split(',')[1], 'image/jpeg', recortes(big));
+    const d = { ...r.datos, ...(qr || {}) };
+    if (qr && qr.total != null && qr.igv != null && Math.abs((+d.subtotal || 0) + qr.igv - qr.total) > .05)
+      d.subtotal = +(qr.total - qr.igv).toFixed(2);
     S.isNew = true;
-    openSheet({ moneda: 'PEN', estado: 'Pendiente', ...r.datos, id: r.id, imagenId: r.imagenId }, dataUrl);
-    if (r.aviso) toast('No se pudo leer automáticamente. Completa los datos.');
+    openSheet({ moneda: 'PEN', estado: 'Pendiente', ...d, id: r.id, imagenId: r.imagenId, _qr: !!qr }, dataUrl);
+    if (r.aviso && !qr) toast('No se pudo leer automáticamente. Completa los datos.');
   } catch (e) { toast('Error: ' + (e.message || e)); resetCap(); }
+}
+
+/* ---- Validación contable ---- */
+function rucOk(r) {
+  if (!/^(10|15|16|17|20)\d{9}$/.test(r)) return false;
+  const s = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2].reduce((a, w, i) => a + w * +r[i], 0);
+  return (11 - s % 11) % 10 === +r[10];
+}
+function validar() {
+  if (!S.cur) return [];
+  const v = {}; for (const el of $('#frm').elements) v[el.name] = el.value.trim();
+  const n = k => +v[k] || 0, W = [], bad = new Set();
+  const add = (msg, ...ks) => { W.push(msg); ks.forEach(k => bad.add(k)); };
+  const falta = ['fechaEmision', 'ruc', 'proveedor', 'numero', 'total'].filter(k => k === 'total' ? !n(k) : !v[k]);
+  if (falta.length) add('Faltan datos obligatorios', ...falta);
+  if (v.ruc && !rucOk(v.ruc)) add('El RUC no es válido (revisa los 11 dígitos)', 'ruc');
+  if (v.tipo !== 'Recibo por honorarios' && n('total') && (n('subtotal') || n('igv')) && Math.abs(n('subtotal') + n('igv') - n('total')) > .05)
+    add(`Subtotal + IGV = ${(n('subtotal') + n('igv')).toFixed(2)}, pero el total es ${n('total').toFixed(2)}`, 'subtotal', 'igv', 'total');
+  if (n('subtotal') && n('igv')) {
+    const t = n('igv') / n('subtotal');
+    if (![.18, .10, .14].some(x => Math.abs(t - x) < .006)) add(`El IGV es el ${(t * 100).toFixed(1)}% del subtotal (lo normal es 18%)`, 'igv');
+  }
+  if (v.fechaEmision) {
+    const d = new Date(v.fechaEmision + 'T12:00'), hoy = new Date();
+    if (d > hoy) add('La fecha de emisión está en el futuro', 'fechaEmision');
+    else if ((hoy - d) / 864e5 > 366) add('La fecha de emisión tiene más de un año', 'fechaEmision');
+  }
+  if (v.tipo === 'Factura' && v.serie && !/^[FE]/i.test(v.serie)) add('La serie de una factura empieza con F o E', 'serie');
+  if (v.tipo === 'Boleta' && v.serie && !/^[BE]/i.test(v.serie)) add('La serie de una boleta empieza con B o E', 'serie');
+  for (const el of $('#frm').elements) el.closest('.row').classList.toggle('bad', bad.has(el.name));
+  $('#chk').innerHTML = (S.cur._qr ? '<div class="ok">✓ Verificado con el QR SUNAT: RUC, serie, número, fecha, IGV y total</div>' : '')
+    + (W.length ? `<div class="warn"><b>Revisa antes de guardar</b>${W.map(w => `<div>• ${esc(w)}</div>`).join('')}</div>`
+      : (S.cur._qr ? '' : '<div class="ok">✓ Los importes cuadran</div>'));
+  return W;
 }
 
 /* ---- Hoja de detalle ---- */
@@ -287,6 +371,7 @@ function openSheet(rec, src) {
     run('obtenerImagen', rec.imagenId).then(s => { if (S.cur === rec) img.src = s; })
       .catch(() => toast('No se pudo cargar la imagen')).finally(() => $('#imgSpin').hidden = true);
   }
+  validar();
   $('#ov').classList.add('open'); $('#sh').classList.add('open'); $('#sh').scrollTop = 0;
 }
 function closeSheet() { $('#ov').classList.remove('open'); $('#sh').classList.remove('open'); }
@@ -302,6 +387,8 @@ async function save() {
   const rec = { ...S.cur };
   for (const el of $('#frm').elements) rec[el.name] = el.value;
   if (!rec.fechaEmision || !(+rec.total)) return toast('Completa fecha de emisión y total');
+  const W = validar();
+  if (W.length && !confirm('Hay observaciones:\n\n• ' + W.join('\n• ') + '\n\n¿Guardar de todas formas?')) return;
   const b = $('#saveBtn'); b.disabled = true;
   try {
     const saved = await run('guardarFactura', rec, S.isNew);
