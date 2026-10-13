@@ -118,6 +118,8 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 .scBottom{position:absolute;left:0;right:0;bottom:0;padding:0 16px calc(24px + env(safe-area-inset-bottom));text-align:center;color:#fff}
 #scMsg{margin:0 0 16px;font-size:15px;font-weight:600;text-shadow:0 1px 3px rgba(0,0,0,.6)}
 #scMsg.leido{color:#30d158}
+#scan.flash::after{content:"";position:absolute;inset:0;background:#fff;pointer-events:none;animation:fl .35s ease-out forwards}
+@keyframes fl{from{opacity:.8}to{opacity:0}}
 .shutter{width:74px;height:74px;border-radius:50%;border:5px solid #fff;background:rgba(255,255,255,.3);cursor:pointer}
 .shutter:active{background:#fff}
 </style>
@@ -129,9 +131,9 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
   <section id="v-home" class="view active">
     <p class="eyebrow" id="hoy"></p>
     <h1>Mis Facturas</h1>
-    <button class="tile" id="draftTile" hidden onclick="seguirBorrador()">
+    <button class="tile" id="draftTile" hidden onclick="abrirRevisar()">
       <span class="ic" style="background:linear-gradient(135deg,#ff9f0a,#ff6b00)"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span>
-      <span class="tx"><b>Factura sin terminar</b><small>Toca para continuar donde te quedaste</small></span>
+      <span class="tx"><b id="draftTitle">Por revisar</b><small id="draftSub"></small></span>
       <span class="chev">›</span>
     </button>
     <button class="tile" onclick="go('cargar')">
@@ -156,17 +158,13 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
       <button class="btn" onclick="abrirScanner()">Escanear factura</button>
       <label class="btn sec" for="cam">Tomar foto</label>
       <label class="btn sec" for="gal">Elegir de galería</label>
+      <p class="muted" id="colaInfo" style="margin:16px 0 0"></p>
       <input class="vh" type="file" id="cam" accept="image/*" capture="environment" onchange="onFile(this)">
-      <input class="vh" type="file" id="gal" accept="image/*" onchange="onFile(this)">
+      <input class="vh" type="file" id="gal" accept="image/*" multiple onchange="onFile(this)">
     </div>
     <div id="proc" class="card center" hidden>
       <img id="procImg" class="prev" alt="">
-      <div id="procWait"><div class="spin"></div><p class="muted">Leyendo factura…</p></div>
-      <div id="procErr" hidden>
-        <p class="muted" id="procMsg"></p>
-        <button class="btn" onclick="procesar()">Reintentar</button>
-        <button class="btn sec" onclick="cancelarFoto()">Cancelar</button>
-      </div>
+      <div class="spin"></div><p class="muted">Preparando imagen…</p>
     </div>
   </section>
 
@@ -196,7 +194,7 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 </div>
 
 <!-- HOJA: revisar / detalle -->
-<div class="overlay" id="ov" onclick="S.isNew||closeSheet()"></div>
+<div class="overlay" id="ov" onclick="cerrarSinGuardar()"></div>
 <div class="sheet" id="sh">
   <div class="grab"></div>
   <nav class="bar"><button class="link" id="shCancel" onclick="cancelSheet()">Cerrar</button><b id="shTitle">Detalle</b><button class="link r strong" onclick="save()">Guardar</button></nav>
@@ -209,7 +207,7 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 <div id="scan" hidden>
   <video id="scVideo" playsinline muted autoplay></video>
   <div class="scFrame" id="scFrame"></div>
-  <div class="scTop"><button class="scX" onclick="cerrarScanner()">Cancelar</button></div>
+  <div class="scTop"><button class="scX" id="scDone" onclick="cerrarScanner()">Cerrar</button></div>
   <div class="scBottom"><p id="scMsg"></p><button class="shutter" onclick="capturar()" aria-label="Capturar"></button></div>
 </div>
 <div id="toast"></div>
@@ -270,7 +268,7 @@ async function api(action, args = [], { timeout = 25000, tries = 3 } = {}) {
 function go(v) {
   document.querySelectorAll('.view').forEach(e => e.classList.toggle('active', e.id === 'v-' + v));
   window.scrollTo(0, 0);
-  if (v === 'home') verBorrador();
+  if (v === 'home') estadoCola();
   if (v === 'cargar') resetCap();
   if (v === 'conta') load();
 }
@@ -327,16 +325,12 @@ function leerQR(c) {
   return null;
 }
 
-/* ---- Cargar factura (la foto se conserva para reintentar si falla la conexión) ---- */
-let foto = null;
-function procState(s, msg) {
-  $('#pick').hidden = s !== 'pick'; $('#proc').hidden = s === 'pick';
-  $('#procWait').hidden = s !== 'wait'; $('#procErr').hidden = s !== 'err';
-  if (msg) $('#procMsg').textContent = msg;
-}
-function resetCap() { if (!S.busy && !foto) procState('pick'); }
-function cancelarFoto() { foto = null; procState('pick'); }
-/* ---- Mejora de imagen: contraste automático para que el texto se lea mejor ---- */
+/* ---- Cargar factura: se captura al instante y se procesa en segundo plano ---- */
+const AUTO_GUARDAR = true; // guarda solas las facturas con QR verificado y sin observaciones
+function procState(s) { $('#pick').hidden = s !== 'pick'; $('#proc').hidden = s === 'pick'; }
+function resetCap() { if (!S.busy) procState('pick'); estadoCola(); }
+
+/* Mejora de imagen: contraste automático para que el texto se lea mejor */
 function mejorar(c) {
   const ctx = c.getContext('2d'), im = ctx.getImageData(0, 0, c.width, c.height), d = im.data, h = new Uint32Array(256);
   for (let i = 0; i < d.length; i += 16) h[(d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8]++;
@@ -350,27 +344,108 @@ function mejorar(c) {
   ctx.putImageData(im, 0, 0);
   return c;
 }
-async function prepararFoto(src, w, h, qrVivo) {
+// Con QR la IA solo lee proveedor/categoría: no hacen falta recortes ampliados (más rápido)
+function prepararFoto(src, w, h, qrVivo) {
   const big = mejorar(toCanvas(src, 0, 0, w, h, 2400));
-  const dataUrl = toCanvas(big, 0, 0, big.width, big.height, 2048).toDataURL('image/jpeg', .9);
-  $('#procImg').src = dataUrl;
-  await sleep(50);
+  const dataUrl = toCanvas(big, 0, 0, big.width, big.height, 2048).toDataURL('image/jpeg', .88);
   let qr = qrVivo || null;
   if (!qr) try { qr = leerQR(big); } catch (e) {}
-  foto = { dataUrl, partes: recortes(big), qr };
+  return { dataUrl, partes: qr ? [] : recortes(big), qr };
 }
 async function onFile(inp) {
-  const file = inp.files[0]; inp.value = '';
-  if (!file || S.busy) return;
+  const files = [...inp.files]; inp.value = '';
+  if (!files.length || S.busy) return;
   S.busy = true; procState('wait');
-  try { const img = await loadImg(file); await prepararFoto(img, img.naturalWidth, img.naturalHeight); }
-  catch (e) { S.busy = false; foto = null; procState('pick'); return toast('No se pudo leer la foto. Intenta con otra.'); }
-  S.busy = false;
-  procesar();
+  for (const file of files) {
+    try { const img = await loadImg(file); await sleep(30); await encolar(prepararFoto(img, img.naturalWidth, img.naturalHeight)); }
+    catch (e) { toast('No se pudo leer una de las fotos'); }
+  }
+  S.busy = false; procState('pick');
+  toast(files.length > 1 ? `✓ ${files.length} facturas en proceso` : '✓ Factura en proceso. Puedes cargar la siguiente.');
 }
 
-/* ---- Escáner en vivo: busca el QR SUNAT y captura solo al leerlo ---- */
-const SC = { stream: null, timer: 0, qr: null, t0: 0 };
+/* Cola persistente (IndexedDB): las fotos no se pierden aunque cierres la app */
+const DB = (() => {
+  const mem = new Map(); let db = null;
+  const open = () => db || (db = new Promise((res, rej) => {
+    const r = indexedDB.open('facturas', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('jobs', { keyPath: 'k' });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const tx = async (mode, fn) => {
+    const d = await open();
+    return new Promise((res, rej) => { const t = d.transaction('jobs', mode), q = fn(t.objectStore('jobs')); t.oncomplete = () => res(q.result); t.onerror = () => rej(t.error); });
+  };
+  return {
+    put: j => tx('readwrite', s => s.put(j)).catch(() => mem.set(j.k, j)),
+    del: k => tx('readwrite', s => s.delete(k)).catch(() => mem.delete(k)),
+    all: () => tx('readonly', s => s.getAll()).catch(() => [...mem.values()])
+  };
+})();
+const J = { lista: [], proc: new Set() };
+const revisar = {
+  get: () => cache.get('revisar') || [],
+  set: q => { cache.set('revisar', q); estadoCola(); },
+  add: r => revisar.set([...revisar.get().filter(x => x.id !== r.id), r]),
+  quitar: id => revisar.set(revisar.get().filter(x => x.id !== id))
+};
+async function encolar(f) {
+  const job = { k: Date.now() + '-' + Math.random().toString(36).slice(2, 7), ...f, t: Date.now() };
+  J.lista.push(job); await DB.put(job);
+  estadoCola(); procesarCola();
+}
+function procesarCola() {
+  for (const job of J.lista) {
+    if (J.proc.size >= 2) break;
+    if (J.proc.has(job.k) || (job.espera || 0) > Date.now()) continue;
+    J.proc.add(job.k);
+    procesarJob(job).finally(() => { J.proc.delete(job.k); estadoCola(); procesarCola(); });
+  }
+  estadoCola();
+}
+async function procesarJob(job) {
+  try {
+    if (!S.cfg) await boot();
+    const r = await api('procesarFactura', [job.dataUrl.split(',')[1], 'image/jpeg', job.partes, !!job.qr], { timeout: 90000, tries: 1 });
+    const qr = job.qr, d = { ...r.datos, ...(qr || {}) };
+    if (qr && qr.total != null && qr.igv != null && Math.abs((+d.subtotal || 0) + qr.igv - qr.total) > .05)
+      d.subtotal = r2(qr.total - qr.igv);
+    cacheImg(r.imagenId, job.dataUrl);
+    const rec = { moneda: 'PEN', estado: 'Pendiente', ...d, id: r.id, imagenId: r.imagenId, _qr: !!qr };
+    J.lista = J.lista.filter(x => x.k !== job.k); await DB.del(job.k);
+    if (AUTO_GUARDAR && autoOk(rec)) { guardarRec(rec); toast(`✓ ${rec.proveedor || 'Factura'} guardada automáticamente`); }
+    else { revisar.add(rec); toast(`${rec.proveedor || 'Una factura'} está lista para revisar`); }
+  } catch (e) {
+    if (e instanceof NetErr) { job.espera = Date.now() + 15000; setTimeout(procesarCola, 15500); return; }
+    J.lista = J.lista.filter(x => x.k !== job.k); await DB.del(job.k);
+    toast('No se pudo procesar una factura: ' + e.message, 5000);
+  }
+}
+function esDuplicado(r) {
+  return !!(r.ruc && r.numero) && S.data.some(x => x.id !== r.id && nz(x.ruc) === nz(r.ruc) && nz(x.serie) === nz(r.serie) && nz(x.numero) === nz(r.numero));
+}
+function autoOk(r) {
+  const s = +r.subtotal || 0, i = +r.igv || 0, t = +r.total || 0, f = String(r.fechaEmision || '');
+  return r._qr && rucOk(String(r.ruc || '')) && !!String(r.proveedor || '').trim() && /^\d{4}-\d{2}-\d{2}$/.test(f)
+    && new Date(f + 'T12:00') <= new Date() && t > 0 && Math.abs(s + i - t) <= .05 && !esDuplicado(r);
+}
+function estadoCola() {
+  const n = revisar.get().length, p = J.lista.length;
+  $('#draftTile').hidden = !n && !p;
+  $('#draftTitle').textContent = n ? `Por revisar (${n})` : 'Procesando facturas…';
+  $('#draftSub').textContent = p ? `${p} en proceso${n ? ' · toca para revisar' : ' · puedes seguir usando la app'}` : 'Toca para revisar y guardar';
+  $('#colaInfo').innerHTML = (p ? `⏳ ${p} en proceso` : '') + (p && n ? ' · ' : '')
+    + (n ? `<a href="#" onclick="abrirRevisar();return false">${n} por revisar</a>` : '');
+}
+function abrirRevisar() {
+  const r = revisar.get()[0];
+  if (!r) return toast(J.lista.length ? 'Aún procesando, espera unos segundos' : 'No hay facturas por revisar');
+  if (!$('#v-cargar').classList.contains('active')) go('cargar');
+  S.isNew = true; openSheet(r);
+}
+
+/* ---- Escáner continuo: captura al leer el QR y sigue con la siguiente factura ---- */
+const SC = { stream: null, timer: 0, qr: null, t0: 0, vistos: new Set(), n: 0 };
 function scEstado(t, ok) { $('#scMsg').textContent = t; $('#scMsg').className = ok ? 'leido' : ''; $('#scFrame').classList.toggle('leido', !!ok); }
 async function abrirScanner() {
   if (S.busy || SC.stream) return;
@@ -380,7 +455,9 @@ async function abrirScanner() {
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
   } catch (e) { return toast('Permite el acceso a la cámara o usa "Tomar foto"', 4000); }
   const v = $('#scVideo'); v.srcObject = SC.stream;
-  SC.qr = null; SC.t0 = Date.now(); scEstado('Encuadra la factura con el código QR visible');
+  SC.qr = null; SC.t0 = Date.now(); SC.n = 0; SC.vistos.clear();
+  $('#scDone').textContent = 'Cerrar';
+  scEstado('Encuadra la factura con el código QR visible');
   $('#scan').hidden = false;
   await v.play().catch(() => {});
   SC.timer = setInterval(scLoop, 250);
@@ -392,45 +469,33 @@ function scLoop() {
     const c = toCanvas(v, 0, 0, v.videoWidth, v.videoHeight, 1600);
     const q = jsQR(c.getContext('2d').getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'dontInvert' });
     const p = q && parseQR(q.data);
-    if (p) { SC.qr = p; scEstado('✓ QR leído · Mantén quieto…', true); setTimeout(capturar, 700); return; }
+    if (p) {
+      const key = [p.ruc, p.serie, nz(p.numero)].join('|');
+      if (SC.vistos.has(key)) return scEstado('Esta factura ya fue capturada · pasa a la siguiente');
+      SC.qr = p; scEstado('✓ QR leído · Mantén quieto…', true); setTimeout(capturar, 600); return;
+    }
   }
   if (Date.now() - SC.t0 > 5000) scEstado('¿Sin QR? Acércate al código o pulsa el botón para capturar');
 }
 async function capturar() {
   const v = $('#scVideo');
-  if (!SC.stream || !v.videoWidth || S.busy) return;
+  if (!SC.stream || !v.videoWidth) return;
   const qr = SC.qr, snap = toCanvas(v, 0, 0, v.videoWidth, v.videoHeight, 4000);
-  cerrarScanner();
-  S.busy = true; procState('wait');
-  try { await prepararFoto(snap, snap.width, snap.height, qr); }
-  catch (e) { S.busy = false; foto = null; procState('pick'); return toast('No se pudo capturar. Intenta de nuevo.'); }
-  S.busy = false;
-  procesar();
+  if (qr) SC.vistos.add([qr.ruc, qr.serie, nz(qr.numero)].join('|'));
+  $('#scan').classList.remove('flash'); void $('#scan').offsetWidth; $('#scan').classList.add('flash');
+  SC.n++; $('#scDone').textContent = `Listo (${SC.n})`;
+  scEstado(`✓ Capturada (${SC.n}) · Ya puedes escanear la siguiente`, true);
+  await sleep(30);
+  try { await encolar(prepararFoto(snap, snap.width, snap.height, qr)); } catch (e) { toast('No se pudo capturar. Intenta de nuevo.'); }
+  setTimeout(() => { if (SC.stream) { SC.qr = null; SC.t0 = Date.now(); scEstado('Encuadra la siguiente factura'); } }, 1200);
 }
 function cerrarScanner() {
   clearInterval(SC.timer);
   if (SC.stream) SC.stream.getTracks().forEach(t => t.stop());
   SC.stream = null; $('#scVideo').srcObject = null; $('#scan').hidden = true;
+  if (SC.n) toast(`✓ ${SC.n} factura${SC.n > 1 ? 's' : ''} en proceso`);
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden && SC.stream) cerrarScanner(); });
-async function procesar() {
-  if (!foto || S.busy) return;
-  S.busy = true; procState('wait');
-  try {
-    if (!S.cfg) await boot();
-    const r = await api('procesarFactura', [foto.dataUrl.split(',')[1], 'image/jpeg', foto.partes], { timeout: 90000, tries: 1 });
-    const qr = foto.qr, d = { ...r.datos, ...(qr || {}) };
-    if (qr && qr.total != null && qr.igv != null && Math.abs((+d.subtotal || 0) + qr.igv - qr.total) > .05)
-      d.subtotal = r2(qr.total - qr.igv);
-    cacheImg(r.imagenId, foto.dataUrl);
-    const src = foto.dataUrl; foto = null;
-    S.isNew = true;
-    openSheet({ moneda: 'PEN', estado: 'Pendiente', ...d, id: r.id, imagenId: r.imagenId, _qr: !!qr }, src);
-    if (r.aviso && !qr) toast('No se pudo leer automáticamente. Completa los datos.');
-  } catch (e) {
-    procState('err', (e.message || 'Error') + '. Tu foto se conserva: pulsa Reintentar.');
-  } finally { S.busy = false; }
-}
 
 /* ---- Validación contable ---- */
 function rucOk(r) {
@@ -515,18 +580,22 @@ function openSheet(rec, src) {
   validar();
   $('#ov').classList.add('open'); $('#sh').classList.add('open'); $('#sh').scrollTop = 0;
 }
+function cerrarSinGuardar() {
+  if (S.isNew && S.cur) { guardarBorrador(true); toast('Quedó en «Por revisar»'); }
+  S.isNew = false; S.cur = null; closeSheet(); estadoCola();
+}
 function closeSheet() { $('#ov').classList.remove('open'); $('#sh').classList.remove('open'); }
 function cancelSheet() {
   if (S.isNew && S.cur) {
     if (!confirm('¿Descartar esta factura?')) return;
     api('descartarImagen', [S.cur.imagenId], { tries: 2 }).catch(() => {});
-    S.isNew = false; cache.set('draft', null); verBorrador();
+    revisar.quitar(S.cur.id); S.isNew = false;
   }
   S.cur = null; closeSheet(); resetCap();
 }
 function ver(id) { const r = S.data.find(x => x.id === id); if (r) { S.isNew = false; openSheet(r); } }
 
-/* ---- Borrador: una factura nueva sin guardar nunca se pierde ---- */
+/* ---- Borrador: lo que editas en una factura nueva se guarda en "Por revisar" ---- */
 let tDraft;
 function guardarBorrador(ya) {
   if (!S.isNew || !S.cur) return;
@@ -534,15 +603,9 @@ function guardarBorrador(ya) {
   const fn = () => {
     if (!S.isNew || !S.cur) return;
     const d = limpio(S.cur); for (const el of $('#frm').elements) d[el.name] = el.value;
-    d._qr = S.cur._qr; cache.set('draft', d);
+    d._qr = S.cur._qr; revisar.add(d);
   };
   ya ? fn() : (tDraft = setTimeout(fn, 300));
-}
-function verBorrador() { $('#draftTile').hidden = !cache.get('draft'); }
-function seguirBorrador() {
-  const d = cache.get('draft');
-  if (!d) return verBorrador();
-  go('cargar'); S.isNew = true; openSheet(d);
 }
 
 /* ---- Guardar: instantáneo en el teléfono + envío seguro con reintentos ---- */
@@ -556,18 +619,26 @@ function save() {
   for (const el of $('#frm').elements) rec[el.name] = el.value.trim();
   ['subtotal', 'igv', 'total'].forEach(k => rec[k] = r2(numv(rec[k])));
   if (!rec.fechaEmision || !rec.total) return toast('Completa fecha de emisión y total');
-  if (rec.ruc && rec.numero && S.data.some(r => r.id !== rec.id && nz(r.ruc) === nz(rec.ruc) && nz(r.serie) === nz(rec.serie) && nz(r.numero) === nz(rec.numero)))
-    return toast('Esta factura ya está registrada');
+  if (esDuplicado(rec)) return toast('Esta factura ya está registrada');
   const W = validar();
   if (W.length && !confirm('Hay observaciones:\n\n• ' + W.join('\n• ') + '\n\n¿Guardar de todas formas?')) return;
-  const out = limpio(rec), nueva = S.isNew;
+  const nueva = S.isNew;
+  clearTimeout(tDraft);
+  if (nueva) revisar.quitar(rec.id);
+  S.isNew = false; S.cur = null;
+  closeSheet(); resetCap();
+  guardarRec(rec);
+  const quedan = revisar.get().length;
+  toast(navigator.onLine === false ? 'Guardada en el teléfono: se enviará al volver la conexión'
+    : (nueva ? (quedan ? `Guardada ✓ · Quedan ${quedan} por revisar` : 'Factura guardada ✓') : 'Cambios guardados ✓'));
+  if (nueva && quedan) setTimeout(abrirRevisar, 450);
+}
+function guardarRec(rec) {
+  const out = limpio(rec);
+  ['subtotal', 'igv', 'total'].forEach(k => out[k] = r2(numv(out[k])));
   upsert({ ...out, _pend: true }); cache.set('data', S.data);
   cola.set([...cola.get(), { k: Date.now() + '-' + Math.random(), rec: out }]);
-  if (nueva) cache.set('draft', null);
-  S.isNew = false; S.cur = null;
-  closeSheet(); resetCap(); render();
-  toast(navigator.onLine === false ? 'Guardada en el teléfono: se enviará al volver la conexión' : (nueva ? 'Factura guardada ✓' : 'Cambios guardados ✓'));
-  flush();
+  render(); flush();
 }
 async function flush() {
   if (enviando || !API_URL) return;
@@ -685,14 +756,16 @@ async function boot() { aplicarCfg(await api('getConfig')); }
   let tq; $('#q').oninput = e => { clearTimeout(tq); tq = setTimeout(() => { S.q = e.target.value; render(); }, 120); };
   const d = cache.get('data'); if (Array.isArray(d)) { S.data = d; S.loaded = true; }
   aplicarCfg(cache.get('cfg'));
-  verBorrador();
+  const viejo = cache.get('draft'); if (viejo) { revisar.add(viejo); cache.set('draft', null); }
+  DB.all().then(js => { (js || []).forEach(j => { if (!J.lista.some(x => x.k === j.k)) J.lista.push(j); }); procesarCola(); });
+  estadoCola();
   // Sincroniza en segundo plano: configuración + facturas en una sola llamada, y envía lo pendiente
   traer().catch(e => { if (!S.cfg) toast(e.message); });
   flush();
   addEventListener('online', flush);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    flush(); if (Date.now() - S.fresh > 60000) traer().catch(() => {});
+    flush(); procesarCola(); if (Date.now() - S.fresh > 60000) traer().catch(() => {});
   });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   // Ícono para iPhone (iOS no acepta SVG): se genera después de mostrar la app
