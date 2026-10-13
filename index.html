@@ -109,6 +109,17 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
 .warn b{display:block;color:#c46a00;margin-bottom:4px}
 .row.bad>span{color:#c46a00;font-weight:600}
 @media (prefers-color-scheme:dark){.ok{color:#30d158}.warn b,.row.bad>span{color:#ff9f0a}}
+#scan{position:fixed;inset:0;z-index:30;background:#000}
+#scVideo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.scFrame{position:absolute;inset:calc(70px + env(safe-area-inset-top)) 6% calc(170px + env(safe-area-inset-bottom));border:2px solid rgba(255,255,255,.85);border-radius:18px;box-shadow:0 0 0 9999px rgba(0,0,0,.35);transition:border-color .2s}
+.scFrame.leido{border-color:#30d158;border-width:4px}
+.scTop{position:absolute;top:0;left:0;right:0;padding:calc(10px + env(safe-area-inset-top)) 12px 0}
+.scX{background:rgba(0,0,0,.45);color:#fff;border:0;border-radius:18px;padding:8px 16px;font-size:16px;cursor:pointer}
+.scBottom{position:absolute;left:0;right:0;bottom:0;padding:0 16px calc(24px + env(safe-area-inset-bottom));text-align:center;color:#fff}
+#scMsg{margin:0 0 16px;font-size:15px;font-weight:600;text-shadow:0 1px 3px rgba(0,0,0,.6)}
+#scMsg.leido{color:#30d158}
+.shutter{width:74px;height:74px;border-radius:50%;border:5px solid #fff;background:rgba(255,255,255,.3);cursor:pointer}
+.shutter:active{background:#fff}
 </style>
 </head>
 <body>
@@ -142,7 +153,8 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
       <div class="hero"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></div>
       <h2>Fotografía tu comprobante</h2>
       <p class="muted">Buena luz, sin sombras, documento completo y el código QR visible.</p>
-      <label class="btn" for="cam">Tomar foto</label>
+      <button class="btn" onclick="abrirScanner()">Escanear factura</button>
+      <label class="btn sec" for="cam">Tomar foto</label>
       <label class="btn sec" for="gal">Elegir de galería</label>
       <input class="vh" type="file" id="cam" accept="image/*" capture="environment" onchange="onFile(this)">
       <input class="vh" type="file" id="gal" accept="image/*" onchange="onFile(this)">
@@ -192,6 +204,13 @@ button.row{width:100%;border:0;background:none;color:var(--red);justify-content:
   <div id="chk"></div>
   <form id="frm" onsubmit="return false" oninput="onEdit(event)" onchange="validar()"></form>
   <button class="btn" id="saveBtn" onclick="save()">Guardar</button>
+</div>
+<!-- ESCÁNER -->
+<div id="scan" hidden>
+  <video id="scVideo" playsinline muted autoplay></video>
+  <div class="scFrame" id="scFrame"></div>
+  <div class="scTop"><button class="scX" onclick="cerrarScanner()">Cancelar</button></div>
+  <div class="scBottom"><p id="scMsg"></p><button class="shutter" onclick="capturar()" aria-label="Capturar"></button></div>
 </div>
 <div id="toast"></div>
 
@@ -317,24 +336,83 @@ function procState(s, msg) {
 }
 function resetCap() { if (!S.busy && !foto) procState('pick'); }
 function cancelarFoto() { foto = null; procState('pick'); }
+/* ---- Mejora de imagen: contraste automático para que el texto se lea mejor ---- */
+function mejorar(c) {
+  const ctx = c.getContext('2d'), im = ctx.getImageData(0, 0, c.width, c.height), d = im.data, h = new Uint32Array(256);
+  for (let i = 0; i < d.length; i += 16) h[(d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8]++;
+  const tot = d.length / 16; let lo = 0, hi = 255, a = 0;
+  while (lo < 255 && (a += h[lo]) < tot * .01) lo++;
+  a = 0; while (hi > 0 && (a += h[hi]) < tot * .01) hi--;
+  if (hi - lo < 40 || (lo < 8 && hi > 247)) return c;
+  const k = 255 / (hi - lo), lut = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) lut[v] = (v - lo) * k;
+  for (let i = 0; i < d.length; i += 4) { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
+  ctx.putImageData(im, 0, 0);
+  return c;
+}
+async function prepararFoto(src, w, h, qrVivo) {
+  const big = mejorar(toCanvas(src, 0, 0, w, h, 2400));
+  const dataUrl = toCanvas(big, 0, 0, big.width, big.height, 2048).toDataURL('image/jpeg', .9);
+  $('#procImg').src = dataUrl;
+  await sleep(50);
+  let qr = qrVivo || null;
+  if (!qr) try { qr = leerQR(big); } catch (e) {}
+  foto = { dataUrl, partes: recortes(big), qr };
+}
 async function onFile(inp) {
   const file = inp.files[0]; inp.value = '';
   if (!file || S.busy) return;
   S.busy = true; procState('wait');
-  try {
-    const img = await loadImg(file);
-    const big = toCanvas(img, 0, 0, img.naturalWidth, img.naturalHeight, 2400);
-    const dataUrl = toCanvas(big, 0, 0, big.width, big.height, 2048).toDataURL('image/jpeg', .9);
-    $('#procImg').src = dataUrl;
-    await sleep(50);
-    let qr = null; try { qr = leerQR(big); } catch (e) {}
-    foto = { dataUrl, partes: recortes(big), qr };
-  } catch (e) {
-    S.busy = false; foto = null; procState('pick'); return toast('No se pudo leer la foto. Intenta con otra.');
-  }
+  try { const img = await loadImg(file); await prepararFoto(img, img.naturalWidth, img.naturalHeight); }
+  catch (e) { S.busy = false; foto = null; procState('pick'); return toast('No se pudo leer la foto. Intenta con otra.'); }
   S.busy = false;
   procesar();
 }
+
+/* ---- Escáner en vivo: busca el QR SUNAT y captura solo al leerlo ---- */
+const SC = { stream: null, timer: 0, qr: null, t0: 0 };
+function scEstado(t, ok) { $('#scMsg').textContent = t; $('#scMsg').className = ok ? 'leido' : ''; $('#scFrame').classList.toggle('leido', !!ok); }
+async function abrirScanner() {
+  if (S.busy || SC.stream) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return $('#cam').click();
+  try {
+    SC.stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+  } catch (e) { return toast('Permite el acceso a la cámara o usa "Tomar foto"', 4000); }
+  const v = $('#scVideo'); v.srcObject = SC.stream;
+  SC.qr = null; SC.t0 = Date.now(); scEstado('Encuadra la factura con el código QR visible');
+  $('#scan').hidden = false;
+  await v.play().catch(() => {});
+  SC.timer = setInterval(scLoop, 250);
+}
+function scLoop() {
+  const v = $('#scVideo');
+  if (!SC.stream || SC.qr || !v.videoWidth) return;
+  if (window.jsQR) {
+    const c = toCanvas(v, 0, 0, v.videoWidth, v.videoHeight, 1600);
+    const q = jsQR(c.getContext('2d').getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'dontInvert' });
+    const p = q && parseQR(q.data);
+    if (p) { SC.qr = p; scEstado('✓ QR leído · Mantén quieto…', true); setTimeout(capturar, 700); return; }
+  }
+  if (Date.now() - SC.t0 > 5000) scEstado('¿Sin QR? Acércate al código o pulsa el botón para capturar');
+}
+async function capturar() {
+  const v = $('#scVideo');
+  if (!SC.stream || !v.videoWidth || S.busy) return;
+  const qr = SC.qr, snap = toCanvas(v, 0, 0, v.videoWidth, v.videoHeight, 4000);
+  cerrarScanner();
+  S.busy = true; procState('wait');
+  try { await prepararFoto(snap, snap.width, snap.height, qr); }
+  catch (e) { S.busy = false; foto = null; procState('pick'); return toast('No se pudo capturar. Intenta de nuevo.'); }
+  S.busy = false;
+  procesar();
+}
+function cerrarScanner() {
+  clearInterval(SC.timer);
+  if (SC.stream) SC.stream.getTracks().forEach(t => t.stop());
+  SC.stream = null; $('#scVideo').srcObject = null; $('#scan').hidden = true;
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && SC.stream) cerrarScanner(); });
 async function procesar() {
   if (!foto || S.busy) return;
   S.busy = true; procState('wait');
